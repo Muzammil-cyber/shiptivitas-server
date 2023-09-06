@@ -115,20 +115,113 @@ app.get('/api/v1/clients/:id', (req, res) => {
  *
  */
 app.put('/api/v1/clients/:id', (req, res) => {
-  const id = parseInt(req.params.id , 10);
-  const { valid, messageObj } = validateId(id);
-  if (!valid) {
-    res.status(400).send(messageObj);
+  const id = parseInt(req.params.id, 10);
+  const { valid: idValid, messageObj: idMessageObj } = validateId(id);
+  if (!idValid) {
+    return res.status(400).send(idMessageObj);
   }
 
-  let { status, priority } = req.body;
-  let clients = db.prepare('select * from clients').all();
-  const client = clients.find(client => client.id === id);
+  const { status, priority } = req.body;
+  let statusValid = true;
+  let priorityValid = true;
 
-  /* ---------- Update code below ----------*/
+  if (status) {
+    if (
+      status !== "backlog" &&
+      status !== "in-progress" &&
+      status !== "complete"
+    ) {
+      statusValid = false;
+    }
+  }
 
+  if (priority) {
+    const { valid: priorityValidTemp } = validatePriority(priority);
+    priorityValid = priorityValidTemp;
+  }
 
+  if (!statusValid && !priorityValid) {
+    return res.status(400).send({
+      message: "Invalid status and priority provided.",
+      long_message:
+        "Status can only be one of the following: [backlog | in-progress | complete]. Priority can only be a positive integer.",
+    });
+  } else if (!statusValid) {
+    return res.status(400).send({
+      message: "Invalid status provided.",
+      long_message:
+        "Status can only be one of the following: [backlog | in-progress | complete].",
+    });
+  } else if (!priorityValid) {
+    return res.status(400).send({
+      message: "Invalid priority provided.",
+      long_message: "Priority can only be a positive integer.",
+    });
+  }
 
+  const client = db.prepare("select * from clients where id = ?").get(id);
+  if (status && client.status !== status) {
+    const clients = db
+      .prepare("select * from clients where status = ? order by priority asc")
+      .all(status);
+    const oldPriority = client.priority;
+    const newPriority =
+      clients.length > 0 ? clients[clients.length - 1].priority + 1 : 1;
+    db.prepare("update clients set status = ?, priority = ? where id = ?").run(
+      status,
+      newPriority,
+      id
+    );
+    clients.forEach((c) => {
+      if (c.id !== id && c.priority >= oldPriority) {
+        db.prepare("update clients set priority = ? where id = ?").run(
+          c.priority + 1,
+          c.id
+        );
+      }
+    });
+  } else if (priority && client.priority !== priority) {
+    const clients = db
+      .prepare("select * from clients where status = ? order by priority asc")
+      .all(client.status);
+    const oldPriority = client.priority;
+    const newPriority = priority;
+    if (oldPriority < newPriority) {
+      clients.forEach((c) => {
+        if (
+          c.id !== id &&
+          c.priority > oldPriority &&
+          c.priority <= newPriority
+        ) {
+          db.prepare("update clients set priority = ? where id = ?").run(
+            c.priority - 1,
+            c.id
+          );
+        }
+      });
+    } else {
+      clients.forEach((c) => {
+        if (
+          c.id !== id &&
+          c.priority >= newPriority &&
+          c.priority < oldPriority
+        ) {
+          db.prepare("update clients set priority = ? where id = ?").run(
+            c.priority + 1,
+            c.id
+          );
+        }
+      });
+    }
+    db.prepare("update clients set priority = ? where id = ?").run(
+      newPriority,
+      id
+    );
+  }
+
+  const clients = db
+    .prepare("select * from clients order by status asc, priority asc")
+    .all();
   return res.status(200).send(clients);
 });
 
